@@ -14,12 +14,20 @@ Publishes a Python project to PyPI, the Python Package Index.
 <!-- markdownlint-disable MD046 -->
 
 ```yaml
-steps:
-  - name: 'Publish to PyPI'
-    uses: lfreleng-actions/pypi-publish-action@main
-    with:
-      environment: 'development'
-      attestations: true
+jobs:
+  pypi-publish:
+    name: 'Upload release to PyPI'
+    runs-on: 'ubuntu-latest'
+    environment:
+      name: 'production'
+    permissions:
+      id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
+    steps:
+    - name: 'Publish to PyPI'
+      uses: lfreleng-actions/pypi-publish-action@main
+      with:
+        environment: 'production'
+        attestations: true
 ```
 
 <!-- markdownlint-enable MD046 -->
@@ -42,6 +50,15 @@ steps:
 
 <!-- markdownlint-enable MD013 -->
 
+## Permissions
+
+This action needs the following permissions:
+
+```yaml
+permissions:
+  id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
+```
+
 ## Implementation Details
 
 Uses the upstream actions:
@@ -55,8 +72,7 @@ Publishes using three different authentication methods.
 
 In order of preference:
 
-- [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (Uses an
-OIDC token)
+- [Trusted Publishing][Trusted Publishing] (Uses an OIDC token)
 - Static credential retrieved from 1Password vault using a service account
 - A static credential from GitHub secrets
 
@@ -65,3 +81,5 @@ Note: the first/initial publishing step cannot leverage Trusted Publishing
 The first time a given repository gets published to PyPI, a static API key
 is necessary. After this, setup trusted publishing for the project in the
 PyPI web portal.
+
+[Trusted Publishing]: https://docs.pypi.org/trusted-publishers/
