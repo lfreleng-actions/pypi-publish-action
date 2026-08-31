@@ -406,7 +406,7 @@ runs:
     - name: 'Retrieve Credential [1Password]'
       if: steps.conditions.outputs.publish_method == '1Password Vault'
       # yamllint disable-line rule:line-length
-      uses: 1password/load-secrets-action@e544b780808654ba8ceba5fb2fe2897103d92ff4 # v5.0.0
+      uses: 1password/load-secrets-action@70062d7a876d3eb6334754fa26efd2fbd90c32f2 # v5.0.1
       with:
         # Export loaded secrets as environment variables
         export-env: true
