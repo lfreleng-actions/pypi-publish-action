@@ -61,7 +61,7 @@ jobs:
           path_prefix: 'test-python-project'
 
       - name: "Running local action: ${{ github.repository }}"
-        uses: ./
+        uses: $/
         with:
           path_prefix: 'test-python-project'
           tag: "${{ env.tag }}"
