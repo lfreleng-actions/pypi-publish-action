@@ -91,9 +91,9 @@ publish checked out as the working directory:
 
 <!-- markdownlint-disable MD013 -->
 
-| Step                                | Sub-action                                                                                                    | What it runs                                                                    |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `Extract project/repository naming` | [lfreleng-actions/python-project-name-action](https://github.com/lfreleng-actions/python-project-name-action) | `python3 -` to read `pyproject.toml` or `setup.py`, when `python3` is on `PATH` |
+| Step                                | Sub-action                                                                                                    | What it runs                                                                       |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `Extract project/repository naming` | [lfreleng-actions/python-project-name-action](https://github.com/lfreleng-actions/python-project-name-action) | `python3 -I -` to read `pyproject.toml` or `setup.py`, when `python3` is on `PATH` |
 
 <!-- markdownlint-enable MD013 -->
 
