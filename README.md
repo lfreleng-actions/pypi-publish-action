@@ -83,6 +83,36 @@ The second action above is a modified/forked version of another action:
 
 <!-- markdownlint-enable MD013 -->
 
+## Python on the Runner
+
+The action needs `python3` on the job's `PATH`; GitHub-hosted runners
+provide one. Two steps use that interpreter, with the repository you
+publish checked out as the working directory:
+
+<!-- markdownlint-disable MD013 -->
+
+| Step                                       | Sub-action                                                                                                    | What it runs                                                                             |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `Extract project/repository naming`        | [lfreleng-actions/python-project-name-action](https://github.com/lfreleng-actions/python-project-name-action) | `python3 -` to read `pyproject.toml` or `setup.py`, when `python3` is on `PATH`          |
+| `Checking package index for build/release` | [lfreleng-actions/pypi-version-check-action](https://github.com/lfreleng-actions/pypi-version-check-action)   | `python3 -m pip index versions`, and `python3 -m ensurepip --upgrade` when pip is absent |
+
+<!-- markdownlint-enable MD013 -->
+
+`pypi-version-check-action` needs `pip` for that interpreter and
+installs it with `ensurepip` when absent. The upload step does not
+use the job's `python3`: `gh-action-pypi-publish` runs in a container
+with its own Python.
+
+The publishing job holds the publishing credentials (the OIDC token for
+Trusted Publishing, or the API token), so start it from a clean
+interpreter. Before calling this action, do not install the project
+you publish, or anything else from the checkout, into that interpreter,
+and do not add a checkout directory to `PATH` or `PYTHONPATH`.
+
+The recommended layout calls this action in its own publishing job,
+separate from the job that builds the project; the action downloads the
+build artefacts that job uploaded, as in the usage examples above.
+
 ## Authentication Methods
 
 Publishes using three different authentication methods.
