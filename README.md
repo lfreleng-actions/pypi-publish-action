@@ -86,21 +86,25 @@ The second action above is a modified/forked version of another action:
 ## Python on the Runner
 
 The action needs `python3` on the job's `PATH`; GitHub-hosted runners
-provide one. Two steps use that interpreter, with the repository you
+provide one. One step uses that interpreter, with the repository you
 publish checked out as the working directory:
 
 <!-- markdownlint-disable MD013 -->
 
-| Step                                       | Sub-action                                                                                                    | What it runs                                                                             |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `Extract project/repository naming`        | [lfreleng-actions/python-project-name-action](https://github.com/lfreleng-actions/python-project-name-action) | `python3 -` to read `pyproject.toml` or `setup.py`, when `python3` is on `PATH`          |
-| `Checking package index for build/release` | [lfreleng-actions/pypi-version-check-action](https://github.com/lfreleng-actions/pypi-version-check-action)   | `python3 -m pip index versions`, and `python3 -m ensurepip --upgrade` when pip is absent |
+| Step                                | Sub-action                                                                                                    | What it runs                                                                    |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `Extract project/repository naming` | [lfreleng-actions/python-project-name-action](https://github.com/lfreleng-actions/python-project-name-action) | `python3 -` to read `pyproject.toml` or `setup.py`, when `python3` is on `PATH` |
 
 <!-- markdownlint-enable MD013 -->
 
-`pypi-version-check-action` needs `pip` for that interpreter and
-installs it with `ensurepip` when absent. The upload step does not
-use the job's `python3`: `gh-action-pypi-publish` runs in a container
+The `Checking package index for build/release` step, which runs
+[lfreleng-actions/pypi-version-check-action](https://github.com/lfreleng-actions/pypi-version-check-action),
+does not use the job's `python3` or `pip`. It installs uv and a
+uv-managed Python 3.13 under `$RUNNER_TEMP`, and queries the package
+index with that interpreter, outside the workspace. uv downloads the
+interpreter from `releases.astral.sh`, so a job behind an egress
+allow-list must permit that host. The upload step does not use the
+job's `python3` either: `gh-action-pypi-publish` runs in a container
 with its own Python.
 
 The publishing job holds the publishing credentials (the OIDC token for
