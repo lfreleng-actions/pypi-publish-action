@@ -8,12 +8,15 @@ name: 'Test GitHub Action 🧪'
 # yamllint disable-line rule:truthy
 on:
   workflow_dispatch:
-  # Cannot be tested on pull request; secrets not available
+  # Pull requests run only the artefact safety job; no secrets needed
+  pull_request:
+    branches: ['main']
   push:
     branches: ['main']
 
 concurrency:
-  group: "${{ github.workflow }}"
+  # yamllint disable-line rule:line-length
+  group: "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
   cancel-in-progress: true
 
 permissions: {}
@@ -25,6 +28,8 @@ jobs:
   ### Test the GitHub Action in this Repository ###
   tests:
     name: 'Test local GitHub Action'
+    # Uses environment secrets, which pull requests cannot access
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     # Run this job in a dedicated environment so its execution and any
     # environment-scoped secrets can be gated by environment protection
@@ -70,3 +75,114 @@ jobs:
           one_password_item: "${{ vars.one_password_item }}"
           pypi_credential: "${{ secrets.pypi_credential }}"
           publish_disable: true
+
+  ### Artefact cleanup/selection must never touch project files ###
+  artefact-safety:
+    name: 'Test artefact path safety'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
+        with:
+          egress-policy: audit
+
+      - name: 'Checkout repository'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Test validation and selection scripts'
+        shell: bash
+        run: bash tests/test-artefact-safety.sh
+
+      - name: 'Create fixture project and distributions'
+        shell: bash
+        run: |
+          # Fixture project with source, metadata and an unrelated file
+          mkdir -p fixture/src/fixture fixture-dists
+          {
+            echo '[project]'
+            echo 'name = "lfreleng-pypi-publish-action-fixture"'
+            echo 'version = "0.0.1"'
+          } > fixture/pyproject.toml
+          echo '"""Fixture."""' > fixture/src/fixture/__init__.py
+          echo 'unrelated' > fixture/notes.txt
+          # Placeholder distributions plus a file that must not upload
+          name='lfreleng_pypi_publish_action_fixture-0.0.1'
+          echo 'wheel' > "fixture-dists/$name-py3-none-any.whl"
+          echo 'sdist' > "fixture-dists/$name.tar.gz"
+          echo 'not a distribution' > fixture-dists/README.txt
+          find fixture -type f -print0 | sort -z | xargs -0 sha256sum \
+            > "$RUNNER_TEMP/fixture-before.txt"
+
+      - name: 'Upload fixture distributions'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: 'fixture-dists-${{ github.run_attempt }}'
+          path: 'fixture-dists/'
+          overwrite: true
+
+      - name: 'Run action with artefact_path at the project root'
+        id: project-root
+        continue-on-error: true
+        uses: $/
+        with:
+          path_prefix: 'fixture'
+          artefact_path: '.'
+          artefact_pattern: 'fixture-dists-${{ github.run_attempt }}'
+          environment: 'development'
+          tag: '0.0.1'
+          no_checkout: true
+          trusted_publishing: 'true'
+          publish_disable: true
+
+      - name: 'Run action with artefact_path in the project'
+        uses: $/
+        with:
+          path_prefix: 'fixture'
+          artefact_path: 'dist'
+          artefact_pattern: 'fixture-dists-${{ github.run_attempt }}'
+          environment: 'development'
+          tag: '0.0.1'
+          no_checkout: true
+          trusted_publishing: 'true'
+          publish_disable: true
+
+      - name: 'Verify project files are unchanged'
+        shell: bash
+        env:
+          PROJECT_ROOT_OUTCOME: "${{ steps.project-root.outcome }}"
+        run: |
+          # Verify project files are unchanged
+          status=0
+          if [ "$PROJECT_ROOT_OUTCOME" != 'failure' ]; then
+            echo "Error: artefact_path '.' was not rejected ❌"
+            status=1
+          fi
+          find fixture -path fixture/dist -prune -o -type f -print0 \
+            | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/fixture-after.txt"
+          if ! diff "$RUNNER_TEMP/fixture-before.txt" \
+            "$RUNNER_TEMP/fixture-after.txt"; then
+            echo "Error: project files changed ❌"
+            status=1
+          fi
+          name='lfreleng_pypi_publish_action_fixture-0.0.1'
+          expected="$(printf '%s\n' "$name-py3-none-any.whl" "$name.tar.gz")"
+          actual="$(cd fixture/dist && LC_ALL=C ls -A)"
+          if [ "$actual" != "$expected" ]; then
+            echo "Error: unexpected artefact_path content: $actual ❌"
+            status=1
+          fi
+          if compgen -G '.pypi-publish-dist.*' > /dev/null; then
+            echo "Error: selection directory was not removed ❌"
+            status=1
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo "Project files intact; distributions selected ✅"
+          fi
+          exit "$status"

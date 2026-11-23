@@ -44,8 +44,35 @@ steps:
 
 <!-- markdownlint-enable MD046 -->
 
-This downloads all artefacts matching the pattern and merges them into the
-dist directory for publishing.
+This downloads all artefacts matching the pattern and merges them into one
+download directory for publishing.
+
+## Distribution Selection
+
+The action never deletes files from your repository or project:
+
+1. It downloads the build artefacts into a new, empty directory under
+   `$RUNNER_TEMP`, outside the source tree.
+2. It copies the regular `*.whl` and `*.tar.gz` files at the top level of
+   that download into a new, empty selection directory, and publishes that
+   selection. It ignores other files and subdirectories. A symlink,
+   directory or other non-regular entry named like a distribution fails
+   the run, as does a download with no wheel or sdist in it.
+3. It copies the selected distributions to `path_prefix/artefact_path`
+   (default `dist`) for later steps in your job. It adds or replaces
+   files with those names and touches nothing else there. It writes each
+   file under a temporary name and renames it into place, so it never
+   writes into an existing file that a hard link shares with another path.
+4. It removes the selection directory when it finishes.
+
+The uploader runs in a container that mounts the workspace and nothing
+else, so the selection directory is a hidden `.pypi-publish-dist.*`
+directory at the workspace root, which the action creates and removes.
+
+`artefact_path` must be a relative path without `..`. The action rejects
+it, before downloading anything, when it resolves (following symlinks) to
+the workspace root, the project root (`path_prefix`), a parent of the
+project root, or a location outside the workspace.
 
 ## Inputs
 
@@ -56,7 +83,7 @@ dist directory for publishing.
 | path_prefix              | False    | Directory location containing project code (default: '.')  |
 | environment              | False    | Mandatory environment, e.g. development, production        |
 | tag                      | True     | Tag for this build/release                                 |
-| artefact_path            | False    | Path/location of build artefacts                           |
+| artefact_path            | False    | Where to copy the published distributions (default: dist)  |
 | artefact_pattern         | False    | Glob pattern to download and merge build artefacts         |
 | one_password_item        | False    | 1Password vault credential for PyPI publishing             |
 | op_service_account_token | False    | 1Password service account credential to access vault       |
