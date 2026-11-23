@@ -107,56 +107,34 @@ runs:
         PATH_PREFIX: "${{ inputs.path_prefix }}"
         ARTEFACT_PATH: "${{ inputs.artefact_path }}"
       run: |
-        # Validate artefact_path before it is used as a download
-        # destination (path_prefix/artefact_path) and, later, as a
-        # 'find ... -exec rm' target. Reject empty, absolute and
-        # traversal values here so no filesystem-write step can be
-        # pointed outside the workspace. Combined with the path_prefix
-        # checks, a relative, non-'..' value cannot escape the
-        # workspace. Containment of the resolved directory is
-        # re-verified once it exists in the cleanup step below.
-        if [ -z "$ARTEFACT_PATH" ]; then
-          echo "Error: artefact_path must not be empty ❌"
-          exit 1
-        fi
-        case "$ARTEFACT_PATH" in
-          /*)
-            echo "Error: artefact_path must be a relative path ❌"
-            exit 1
-            ;;
-          *..*)
-            echo "Error: artefact_path must not contain '..' ❌"
-            exit 1
-            ;;
-        esac
-        # Syntactic checks alone do not cover a pre-created symlink: a
-        # caller repo could make 'path_prefix/artefact_path' (or an
-        # ancestor) a symlink pointing outside the workspace, which the
-        # following download step would follow. Resolve the nearest
-        # existing ancestor directory of the destination and confirm it
-        # stays within the workspace before any download writes to it.
+        # Reject an artefact_path that resolves to the workspace, the
+        # project root, a parent of it or anywhere outside the
+        # workspace, before anything is downloaded or copied
+        bash "$GITHUB_ACTION_PATH/scripts/validate-artefact-path.sh" \
+          > /dev/null
+
+    - name: 'Create staging directories'
+      id: staging
+      shell: bash
+      run: |
+        # Download into a new, empty directory outside the source tree.
+        # The uploader runs in a container that only mounts the
+        # workspace, so the selection it publishes from is a new,
+        # empty directory at the workspace root that this action owns.
         workspace="$(cd -- "${GITHUB_WORKSPACE:-$PWD}" && pwd -P)"
-        target="$PATH_PREFIX/$ARTEFACT_PATH"
-        # Reject a destination that resolves to the workspace root (e.g.
-        # artefact_path '.'), which would extract artefacts over the
-        # repository contents and change what gets published.
-        if [ -d "$target" ] \
-          && [ "$(cd -- "$target" && pwd -P)" = "$workspace" ]; then
-          echo "Error: artefact_path must not resolve to the workspace root ❌"
-          exit 1
-        fi
-        probe="$target"
-        while [ ! -d "$probe" ]; do
-          probe="$(dirname -- "$probe")"
-        done
-        resolved="$(cd -- "$probe" && pwd -P)"
-        case "$resolved/" in
-          "$workspace"/*) ;;
-          *)
-            echo "Error: artefact destination escapes the workspace ❌"
+        download_dir="$(mktemp -d "${RUNNER_TEMP:?}/pypi-download.XXXXXX")"
+        selection_dir="$(mktemp -d "$workspace/.pypi-publish-dist.XXXXXX")"
+        for dir in "$download_dir" "$selection_dir"; do
+          if [ -n "$(ls -A -- "$dir")" ]; then
+            echo "Error: staging directory is not empty: $dir ❌"
             exit 1
-            ;;
-        esac
+          fi
+        done
+        {
+          echo "download_dir=$download_dir"
+          echo "selection_dir=$selection_dir"
+          echo "packages_dir=$(basename -- "$selection_dir")"
+        } >> "$GITHUB_OUTPUT"
 
     - name: 'Extract project/repository naming'
       id: naming
@@ -171,7 +149,7 @@ runs:
       if: inputs.artefact_pattern == ''
       with:
         name: "${{ steps.naming.outputs.python_project_name }}"
-        path: "${{ inputs.path_prefix }}/${{ inputs.artefact_path }}"
+        path: "${{ steps.staging.outputs.download_dir }}"
 
     - name: '⬇ Download build artefacts (pattern)'
       # yamllint disable-line rule:line-length
@@ -179,7 +157,7 @@ runs:
       if: inputs.artefact_pattern != ''
       with:
         pattern: "${{ inputs.artefact_pattern }}"
-        path: "${{ inputs.path_prefix }}/${{ inputs.artefact_path }}"
+        path: "${{ steps.staging.outputs.download_dir }}"
         merge-multiple: true
 
     - name: 'Derive publishing parameters'
@@ -197,52 +175,28 @@ runs:
           echo "publish_url=https://upload.pypi.org/legacy/" >> "$GITHUB_ENV"
         fi
 
-    - name: 'Remove unsupported artefact file types'
-      id: files
+    - name: 'Select distributions for upload'
+      shell: bash
+      env:
+        DOWNLOAD_DIR: "${{ steps.staging.outputs.download_dir }}"
+        SELECTION_DIR: "${{ steps.staging.outputs.selection_dir }}"
+      run: |
+        # Copy only regular *.whl and *.tar.gz files into the selection
+        # the uploader publishes from; nothing is deleted anywhere
+        bash "$GITHUB_ACTION_PATH/scripts/select-distributions.sh" \
+          "$DOWNLOAD_DIR" "$SELECTION_DIR"
+
+    - name: 'Copy distributions to artefact path'
       shell: bash
       env:
         PATH_PREFIX: "${{ inputs.path_prefix }}"
         ARTEFACT_PATH: "${{ inputs.artefact_path }}"
+        SELECTION_DIR: "${{ steps.staging.outputs.selection_dir }}"
       run: |
-        # Remove unsupported artefact file types
-        if [ -z "$ARTEFACT_PATH" ]; then
-          echo "Error: artefact_path must not be empty ❌"
-          exit 1
-        fi
-        case "$ARTEFACT_PATH" in
-          /*)
-            echo "Error: artefact_path must be a relative path ❌"
-            exit 1
-            ;;
-          *..*)
-            echo "Error: artefact_path must not contain '..' ❌"
-            exit 1
-            ;;
-        esac
-        target="$PATH_PREFIX/$ARTEFACT_PATH"
-        if [ ! -d "$target" ]; then
-          echo "Artefact directory not present; nothing to clean: $target"
-          exit 0
-        fi
-        # Resolve to an absolute path and confirm it stays within the
-        # workspace before deleting anything. Using the resolved path
-        # also prevents a leading '-' being treated as a find option.
-        workspace="$(cd -- "${GITHUB_WORKSPACE:-$PWD}" && pwd -P)"
-        resolved="$(cd -- "$target" && pwd -P)"
-        if [ "$resolved" = "$workspace" ]; then
-          echo "Error: artefact_path must not resolve to the workspace root ❌"
-          exit 1
-        fi
-        case "$resolved/" in
-          "$workspace"/*) ;;
-          *)
-            echo "Error: artefact_path escapes the workspace directory ❌"
-            exit 1
-            ;;
-        esac
-        find "$resolved" \
-          ! -name '*.whl' ! -name '*.tar.gz' \
-          -type f -exec rm -f {} + || true
+        # Leave the selected distributions at path_prefix/artefact_path
+        # for later steps in the calling job; adds files, deletes none
+        bash "$GITHUB_ACTION_PATH/scripts/copy-distributions.sh" \
+          "$SELECTION_DIR"
 
     - name: 'Checking package index for build/release'
       id: check-remote
@@ -361,7 +315,7 @@ runs:
       if: steps.conditions.outputs.publish_method == 'Trusted Publishing' && inputs.publish_disable == 'false'
       with:
         repository-url: "${{ env.publish_url }}"
-        packages-dir: "${{ inputs.path_prefix }}/${{ inputs.artefact_path }}"
+        packages-dir: "${{ steps.staging.outputs.packages_dir }}"
         # We already validated earlier in the pipeline (twine)
         verify-metadata: false
         attestations: "${{ inputs.attestations }}"
@@ -430,11 +384,11 @@ runs:
       if: steps.conditions.outputs.publish_method == '1Password Vault' && inputs.publish_disable == 'false'
       with:
         repository-url: "${{ env.publish_url }}"
-        packages-dir: "${{ inputs.path_prefix }}/${{ inputs.artefact_path }}"
+        packages-dir: "${{ steps.staging.outputs.packages_dir }}"
         verify-metadata: false
         # Credential resolved from 1Password and exported by the previous
         # step (load-secrets-action with export-env: true)
-        password: "${{ env.pypi_credential }}"
+        password: ${{ env.pypi_credential }}
         attestations: "${{ inputs.attestations }}"
         print-hash: true
         verbose: true
@@ -452,10 +406,10 @@ runs:
         steps.conditions.outputs.publish_method == 'GitHub Secret' && inputs.publish_disable == 'false'
       with:
         repository-url: "${{ env.publish_url }}"
-        packages-dir: "${{ inputs.path_prefix }}/${{ inputs.artefact_path }}"
+        packages-dir: "${{ steps.staging.outputs.packages_dir }}"
         verify-metadata: false
         # Publishing API key stored as secret/variable in GitHub
-        password: "${{ inputs.pypi_credential }}"
+        password: ${{ inputs.pypi_credential }}
         attestations: "${{ inputs.attestations }}"
         print-hash: true
         verbose: true
@@ -483,4 +437,21 @@ runs:
         echo "Authenticated using: $PUBLISH_METHOD" >> "$GITHUB_STEP_SUMMARY"
         if [ "$PUBLISH_DISABLE" != "true" ]; then
           echo "🔗 $BASE_URL/project/$PROJECT_NAME/$TAG/" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: 'Remove selection directory'
+      if: always()
+      shell: bash
+      env:
+        SELECTION_DIR: "${{ steps.staging.outputs.selection_dir }}"
+      run: |
+        # Remove only the directory this action created in the staging
+        # step; the caller's files and artefact_path are left alone
+        workspace="$(cd -- "${GITHUB_WORKSPACE:-$PWD}" && pwd -P)"
+        case "$SELECTION_DIR" in
+          "$workspace"/.pypi-publish-dist.*) ;;
+          *) exit 0 ;;
+        esac
+        if [ -d "$SELECTION_DIR" ] && [ ! -L "$SELECTION_DIR" ]; then
+          rm -rf -- "$SELECTION_DIR"
         fi
