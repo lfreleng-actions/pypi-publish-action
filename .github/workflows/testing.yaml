@@ -186,3 +186,86 @@ jobs:
             echo "Project files intact; distributions selected ✅"
           fi
           exit "$status"
+
+  ### An empty project name must stop the action before any download ###
+  no-project:
+    name: 'Test path without a Python project'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
+        with:
+          egress-policy: audit
+
+      - name: 'Checkout repository'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Create directory without a Python project'
+        shell: bash
+        run: |
+          # Directory holding no project file the action can name
+          mkdir -p no-project sentinel
+          echo 'not a project' > no-project/notes.txt
+          # Artefact an unnamed download would fetch into staging
+          echo 'sentinel' > sentinel/sentinel.txt
+
+      - name: 'Upload sentinel artefact'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: 'no-project-sentinel-${{ github.run_attempt }}'
+          path: 'sentinel/'
+          overwrite: true
+
+      - name: 'Run action against the directory'
+        id: no-project
+        continue-on-error: true
+        uses: $/
+        with:
+          path_prefix: 'no-project'
+          environment: 'development'
+          tag: '0.0.1'
+          no_checkout: true
+          trusted_publishing: 'true'
+          publish_disable: true
+
+      - name: 'Verify the action failed before downloading'
+        shell: bash
+        env:
+          NO_PROJECT_OUTCOME: "${{ steps.no-project.outcome }}"
+        run: |
+          # Verify the action failed before downloading
+          status=0
+          if [ "$NO_PROJECT_OUTCOME" != 'failure' ]; then
+            echo "Error: empty project name was not rejected ❌"
+            status=1
+          fi
+          # The staging step runs before the guard, so its download
+          # directory must exist and hold nothing, not even the sentinel
+          shopt -s nullglob
+          download_dirs=("$RUNNER_TEMP"/pypi-download.*)
+          if [ "${#download_dirs[@]}" -eq 0 ]; then
+            echo "Error: download staging directory not found ❌"
+            status=1
+          fi
+          for dir in "${download_dirs[@]}"; do
+            if [ -n "$(find "$dir" -mindepth 1 -print -quit)" ]; then
+              echo "Error: artefacts downloaded into $dir ❌"
+              find "$dir" -mindepth 1
+              status=1
+            fi
+          done
+          if [ -e no-project/dist ]; then
+            echo "Error: distributions reached the artefact path ❌"
+            status=1
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo "Empty project name rejected ✅"
+          fi
+          exit "$status"

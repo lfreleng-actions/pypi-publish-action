@@ -139,16 +139,33 @@ runs:
     - name: 'Extract project/repository naming'
       id: naming
       # yamllint disable-line rule:line-length
-      uses: lfreleng-actions/python-project-name-action@084b052f75518277e8cecda32a6feab6e8340c14  # v0.1.12
+      uses: lfreleng-actions/build-metadata-action@689e13653176908922b12f85cb93b061c467ba6f  # v0.13.2
       with:
         path_prefix: "${{ inputs.path_prefix }}"
+        use_version_extract: 'false'
+        include_environment: 'false'
+        artifact_upload: 'false'
+        output_format: ''
+        python_offline_mode: 'true'
+
+    - name: 'Verify project name'
+      shell: bash
+      env:
+        PROJECT_NAME: "${{ steps.naming.outputs.project_name }}"
+      run: |
+        # An empty name would make the download step fetch every
+        # artefact in the run, so stop before any download
+        if [ -z "$PROJECT_NAME" ]; then
+          echo "::error::No project name found under path_prefix ❌"
+          exit 1
+        fi
 
     - name: '⬇ Download build artefacts (single)'
       # yamllint disable-line rule:line-length
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       if: inputs.artefact_pattern == ''
       with:
-        name: "${{ steps.naming.outputs.python_project_name }}"
+        name: "${{ steps.naming.outputs.project_name }}"
         path: "${{ steps.staging.outputs.download_dir }}"
 
     - name: '⬇ Download build artefacts (pattern)'
@@ -204,7 +221,7 @@ runs:
       uses: lfreleng-actions/pypi-version-check-action@81a9b76c7e6c2a1e1f32a31dd0f1a6a952ded827 # v0.2.4
       with:
         index_url: "${{ env.base_url }}/simple"
-        package_name: "${{ steps.naming.outputs.python_project_name }}"
+        package_name: "${{ steps.naming.outputs.project_name }}"
         package_version: "${{ inputs.tag }}"
 
     - name: 'Determine publishing method'
@@ -420,7 +437,7 @@ runs:
         PUBLISH_DISABLE: "${{ inputs.publish_disable }}"
         PUBLISH_METHOD: "${{ steps.conditions.outputs.publish_method }}"
         BASE_URL: "${{ env.base_url }}"
-        PROJECT_NAME: "${{ steps.naming.outputs.python_project_name }}"
+        PROJECT_NAME: "${{ steps.naming.outputs.project_name }}"
         TAG: "${{ inputs.tag }}"
       # yamllint disable rule:line-length
       run: |
