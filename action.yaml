@@ -434,7 +434,7 @@ runs:
         verify-metadata: false
         # Credential resolved from 1Password and exported by the previous
         # step (load-secrets-action with export-env: true)
-        password: "${{ env.pypi_credential }}"
+        password: ${{ env.pypi_credential }}
         attestations: "${{ inputs.attestations }}"
         print-hash: true
         verbose: true
@@ -455,7 +455,7 @@ runs:
         packages-dir: "${{ inputs.path_prefix }}/${{ inputs.artefact_path }}"
         verify-metadata: false
         # Publishing API key stored as secret/variable in GitHub
-        password: "${{ inputs.pypi_credential }}"
+        password: ${{ inputs.pypi_credential }}
         attestations: "${{ inputs.attestations }}"
         print-hash: true
         verbose: true
