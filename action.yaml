@@ -119,12 +119,14 @@ runs:
       run: |
         # Download into a new, empty directory outside the source tree.
         # The uploader runs in a container that only mounts the
-        # workspace, so the selection it publishes from is a new,
-        # empty directory at the workspace root that this action owns.
+        # workspace, so the selection, and the upload directory holding
+        # the files the release still lacks, are new, empty directories
+        # at the workspace root that this action owns.
         workspace="$(cd -- "${GITHUB_WORKSPACE:-$PWD}" && pwd -P)"
         download_dir="$(mktemp -d "${RUNNER_TEMP:?}/pypi-download.XXXXXX")"
         selection_dir="$(mktemp -d "$workspace/.pypi-publish-dist.XXXXXX")"
-        for dir in "$download_dir" "$selection_dir"; do
+        upload_dir="$(mktemp -d "$workspace/.pypi-publish-upload.XXXXXX")"
+        for dir in "$download_dir" "$selection_dir" "$upload_dir"; do
           if [ -n "$(ls -A -- "$dir")" ]; then
             echo "Error: staging directory is not empty: $dir ❌"
             exit 1
@@ -133,7 +135,8 @@ runs:
         {
           echo "download_dir=$download_dir"
           echo "selection_dir=$selection_dir"
-          echo "packages_dir=$(basename -- "$selection_dir")"
+          echo "upload_dir=$upload_dir"
+          echo "upload_packages_dir=$(basename -- "$upload_dir")"
         } >> "$GITHUB_OUTPUT"
 
     - name: 'Extract project/repository naming'
@@ -247,13 +250,31 @@ runs:
         package_name: "${{ steps.release.outputs.name }}"
         package_version: "${{ steps.release.outputs.version }}"
 
+    - name: 'Compare selection with the release on the index'
+      id: files
+      shell: bash
+      env:
+        SELECTION_DIR: "${{ steps.staging.outputs.selection_dir }}"
+        UPLOAD_DIR: "${{ steps.staging.outputs.upload_dir }}"
+        BASE_URL: "${{ env.base_url }}"
+        PROJECT_NAME: "${{ steps.release.outputs.name }}"
+        VERSION: "${{ steps.release.outputs.version }}"
+      run: |
+        # Compare each selected file's name and SHA-256 digest with the
+        # files the release already holds, and stage only the missing
+        # ones for upload. Fails, before any credential is chosen, when
+        # a filename holds another digest or the index cannot be read.
+        python3 -I "$GITHUB_ACTION_PATH/scripts/compare-release.py" \
+          "$SELECTION_DIR" "$UPLOAD_DIR" "$BASE_URL" "$PROJECT_NAME" \
+          "$VERSION"
+
     - name: 'Determine publishing method'
       id: conditions
       shell: bash
       env:
         TRUSTED_PUBLISHING: "${{ inputs.trusted_publishing }}"
         PACKAGE_MATCH: "${{ steps.check-remote.outputs.package_match }}"
-        VERSION_MATCH: "${{ steps.check-remote.outputs.version_match }}"
+        RELEASE_STATE: "${{ steps.files.outputs.state }}"
         ENVIRONMENT: "${{ inputs.environment }}"
         OP_SERVICE_ACCOUNT_TOKEN: "${{ inputs.op_service_account_token }}"
         ONE_PASSWORD_ITEM: "${{ inputs.one_password_item }}"
@@ -285,22 +306,27 @@ runs:
           exit 1
         fi
 
-        if [ "$VERSION_MATCH" != 'true' ]; then
-          echo "This build/release has NOT previously been published ✅"
-        else
-          echo "This build/release has already been published ❌"
-          if [ "$ENVIRONMENT" = "production" ]; then
-            # This is an error for production/tagged releases
-            echo "This build/release has already been published ❌" \
-              >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          else
-            # Publishing is skipped for non-production workflow runs
+        # The same per-file rules apply to every index and environment
+        case "$RELEASE_STATE" in
+          absent)
+            echo "This build/release has NOT previously been published ✅"
+            ;;
+          partial)
+            echo "This build/release is partially published;" \
+              "uploading only the missing files ⚠️"
+            ;;
+          complete)
+            # Every selected file is present with the same digest
+            echo "Every selected file is already present on the index ✅"
             publish_method="Skipped"
             echo "publish_method=$publish_method" >> "$GITHUB_OUTPUT"
             exit 0
-          fi
-        fi
+            ;;
+          *)
+            echo "Error: unknown release state: '$RELEASE_STATE' ❌"
+            exit 1
+            ;;
+        esac
 
         if [ "$publish_method" != "Trusted Publishing" ]; then
           if [ "${tp_disabled:-false}" = "true" ]; then
@@ -355,8 +381,9 @@ runs:
       if: steps.conditions.outputs.publish_method == 'Trusted Publishing' && inputs.publish_disable == 'false'
       with:
         repository-url: "${{ env.publish_url }}"
-        packages-dir: "${{ steps.staging.outputs.packages_dir }}"
-        # Runs 'twine check' on the selection before uploading
+        packages-dir: "${{ steps.staging.outputs.upload_packages_dir }}"
+        # Holds only the files the release lacks; runs 'twine check'
+        # on them before uploading
         verify-metadata: true
         attestations: "${{ inputs.attestations }}"
         # Show checksum values
@@ -424,7 +451,7 @@ runs:
       if: steps.conditions.outputs.publish_method == '1Password Vault' && inputs.publish_disable == 'false'
       with:
         repository-url: "${{ env.publish_url }}"
-        packages-dir: "${{ steps.staging.outputs.packages_dir }}"
+        packages-dir: "${{ steps.staging.outputs.upload_packages_dir }}"
         verify-metadata: true
         # Credential resolved from 1Password and exported by the previous
         # step (load-secrets-action with export-env: true)
@@ -446,7 +473,7 @@ runs:
         steps.conditions.outputs.publish_method == 'GitHub Secret' && inputs.publish_disable == 'false'
       with:
         repository-url: "${{ env.publish_url }}"
-        packages-dir: "${{ steps.staging.outputs.packages_dir }}"
+        packages-dir: "${{ steps.staging.outputs.upload_packages_dir }}"
         verify-metadata: true
         # Publishing API key stored as secret/variable in GitHub
         password: ${{ inputs.pypi_credential }}
@@ -462,36 +489,51 @@ runs:
         BASE_URL: "${{ env.base_url }}"
         PROJECT_NAME: "${{ steps.release.outputs.name }}"
         VERSION: "${{ steps.release.outputs.version }}"
+        RELEASE_STATE: "${{ steps.files.outputs.state }}"
+        UPLOAD_COUNT: "${{ steps.files.outputs.upload_count }}"
+        PRESENT_COUNT: "${{ steps.files.outputs.present_count }}"
       # yamllint disable rule:line-length
       run: |
         # Print summary/job output
         if [ "$PUBLISH_DISABLE" = 'true' ]; then
           echo "### Publishing Disabled: Dry Run 🛑" >> "$GITHUB_STEP_SUMMARY"
         elif [ "$PUBLISH_METHOD" = 'Skipped' ]; then
-          echo "### Publishing Skipped: Previously Released ⛔️" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Already Present: Every File Previously Released ✅" >> "$GITHUB_STEP_SUMMARY"
+          echo "Nothing uploaded; the index holds every selected file with the same SHA-256 digest" >> "$GITHUB_STEP_SUMMARY"
         elif [ "$BASE_URL" != "https://pypi.org" ]; then
           echo '# 🧪 Test PyPI Release' >> "$GITHUB_STEP_SUMMARY"
         else
           echo '# 🚀 PyPI Release' >> "$GITHUB_STEP_SUMMARY"
         fi
-        echo "Authenticated using: $PUBLISH_METHOD" >> "$GITHUB_STEP_SUMMARY"
+        if [ "$RELEASE_STATE" = 'partial' ] && [ "$PUBLISH_DISABLE" = 'true' ]; then
+          echo "Partial release: $PRESENT_COUNT file(s) already present, $UPLOAD_COUNT missing file(s) not uploaded" >> "$GITHUB_STEP_SUMMARY"
+        elif [ "$RELEASE_STATE" = 'partial' ]; then
+          echo "Resumed a partial release: $PRESENT_COUNT file(s) already present, $UPLOAD_COUNT missing file(s) uploaded" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        if [ "$PUBLISH_METHOD" != 'Skipped' ]; then
+          echo "Authenticated using: $PUBLISH_METHOD" >> "$GITHUB_STEP_SUMMARY"
+        fi
         if [ "$PUBLISH_DISABLE" != "true" ]; then
           echo "🔗 $BASE_URL/project/$PROJECT_NAME/$VERSION/" >> "$GITHUB_STEP_SUMMARY"
         fi
 
-    - name: 'Remove selection directory'
+    - name: 'Remove selection and upload directories'
       if: always()
       shell: bash
       env:
         SELECTION_DIR: "${{ steps.staging.outputs.selection_dir }}"
+        UPLOAD_DIR: "${{ steps.staging.outputs.upload_dir }}"
       run: |
-        # Remove only the directory this action created in the staging
+        # Remove only the directories this action created in the staging
         # step; the caller's files and artefact_path are left alone
         workspace="$(cd -- "${GITHUB_WORKSPACE:-$PWD}" && pwd -P)"
-        case "$SELECTION_DIR" in
-          "$workspace"/.pypi-publish-dist.*) ;;
-          *) exit 0 ;;
-        esac
-        if [ -d "$SELECTION_DIR" ] && [ ! -L "$SELECTION_DIR" ]; then
-          rm -rf -- "$SELECTION_DIR"
-        fi
+        for dir in "$SELECTION_DIR" "$UPLOAD_DIR"; do
+          case "$dir" in
+            "$workspace"/.pypi-publish-dist.*) ;;
+            "$workspace"/.pypi-publish-upload.*) ;;
+            *) continue ;;
+          esac
+          if [ -d "$dir" ] && [ ! -L "$dir" ]; then
+            rm -rf -- "$dir"
+          fi
+        done

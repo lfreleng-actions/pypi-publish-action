@@ -54,20 +54,24 @@ The action never deletes files from your repository or project:
 1. It downloads the build artefacts into a new, empty directory under
    `$RUNNER_TEMP`, outside the source tree.
 2. It copies the regular `*.whl` and `*.tar.gz` files at the top level of
-   that download into a new, empty selection directory, and publishes that
-   selection. It ignores other files and subdirectories. A symlink,
-   directory or other non-regular entry named like a distribution fails
-   the run, as does a download with no wheel or sdist in it.
+   that download into a new, empty selection directory. It ignores other
+   files and subdirectories. A symlink, directory or other non-regular
+   entry named like a distribution fails the run, as does a download with
+   no wheel or sdist in it.
 3. It copies the selected distributions to `path_prefix/artefact_path`
    (default `dist`) for later steps in your job. It adds or replaces
    files with those names and touches nothing else there. It writes each
    file under a temporary name and renames it into place, so it never
    writes into an existing file that a hard link shares with another path.
-4. It removes the selection directory when it finishes.
+4. It copies the selected files that the release on the package index
+   does not yet hold into a new, empty upload directory, and publishes
+   that directory (see [Partial Releases and Reruns](#partial-releases-and-reruns)).
+5. It removes the selection and upload directories when it finishes.
 
 The uploader runs in a container that mounts the workspace and nothing
-else, so the selection directory is a hidden `.pypi-publish-dist.*`
-directory at the workspace root, which the action creates and removes.
+else, so the selection and upload directories are the hidden
+`.pypi-publish-dist.*` and `.pypi-publish-upload.*` directories at the
+workspace root, which the action creates and removes.
 
 `artefact_path` must be a relative path without `..`. The action rejects
 it, before downloading anything, when it resolves (following symlinks) to
@@ -112,7 +116,71 @@ or retrieves any credential.
 
 The package index check and the summary link use the verified project
 name and version. Every upload step also runs `twine check` on the
-selection before uploading (`verify-metadata: true`).
+files it uploads before uploading them (`verify-metadata: true`).
+
+## Partial Releases and Reruns
+
+Publication is not atomic. A release can hold an sdist and a wheel for
+each platform, and the uploader sends them one at a time. When a run
+fails part way through, from a network failure, a registry error or a
+cancelled job, the index keeps the files it accepted and the release
+stays partial.
+
+A rerun completes it when it publishes the same files as the first
+attempt. Before it selects or retrieves any credential, the action
+reads the files the release already holds from the index's JSON API,
+`<index>/pypi/<project>/<version>/json` on `https://pypi.org` or
+`https://test.pypi.org`, using the verified project name and version.
+It compares the filename and SHA-256 digest of every selected
+distribution with that list, and the release is then:
+
+<!-- markdownlint-disable MD013 -->
+
+| State       | Meaning                                                                                                                   | Result                                                      |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| absent      | The index answers 404 or holds none of the selected files                                                                 | Uploads every selected file                                 |
+| partial     | The index holds some selected files with the same digest and lacks the rest                                               | Uploads the missing files and nothing else                  |
+| complete    | The index holds every selected file with the same digest                                                                  | Uploads nothing; the summary reports the release as present |
+| conflicting | The index holds a selected filename with a different digest                                                               | Fails before choosing a credential; uploads nothing         |
+| unknown     | The action cannot read the index, the index answers an error, or its answer is not a release description for this release | Fails before choosing a credential; uploads nothing         |
+
+<!-- markdownlint-enable MD013 -->
+
+The same rules apply to every `environment`, production and test
+indexes alike. The action reports, and leaves alone, files the release
+holds outside the selection, such as wheels another job built. It does
+not use Twine's `--skip-existing`, which would accept a file of the
+same name without proving it has the same content.
+
+Choose the rerun with care. A rebuild seldom gives the same bytes:
+the build backend and its version float, and the build environment
+changes the archives even with an unchanged source tree. A rebuilt file
+under a name the index already holds is then conflicting, and the run
+stops before uploading anything.
+
+- **Re-run failed jobs** leaves the build job alone and publishes the
+  first attempt's artefacts again. The files already on the index
+  match, and the action uploads the missing ones.
+- **Re-run all jobs**, or a new run for the same tag, builds again.
+  Unless the build reproduces every file byte for byte, each file the
+  index already holds conflicts, and the rerun cannot complete the
+  release.
+
+This applies to the test index too. A rerun there used to skip as
+already published whatever the files were; a rebuilt file now fails
+it, and with it any job that waits for the test publication.
+
+A rerun cannot repair a conflicting release: the index never accepts a
+different file under a name it has seen, even after deletion. Rerun the
+failed jobs with the original artefacts, or build and publish a new
+version instead.
+
+The index may serve a cached JSON API answer for a short time. A rerun
+soon after an interrupted one can then see fewer files than the index
+holds, and resend a file the index already has. The index accepts a
+resent file when its content is identical and rejects it otherwise, so
+the release never changes; if the run fails, rerun once the cache has
+caught up.
 
 ## Inputs
 
@@ -153,16 +221,17 @@ The second action above is a modified/forked version of another action:
 ## Python on the Runner
 
 The action needs `python3` on the job's `PATH`; GitHub-hosted runners
-provide one. Three steps use that interpreter, with the repository you
+provide one. Four steps use that interpreter, with the repository you
 publish checked out as the working directory:
 
 <!-- markdownlint-disable MD013 -->
 
-| Step                                     | Sub-action                                                                                          | What it runs                                                                                                             |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `Extract project/repository naming`      | [lfreleng-actions/build-metadata-action](https://github.com/lfreleng-actions/build-metadata-action) | `python3 -I -` to read `pyproject.toml` or `setup.py`, when `python3` is on `PATH`                                       |
-| `Verify distributions match the release` | None                                                                                                | `python3 -I scripts/verify-distributions.py`, with no third-party packages, to read the selected distributions' metadata |
-| `Check distribution metadata`            | None                                                                                                | `python3 -I -m venv`, then `pip install --require-hashes` of `scripts/twine-requirements.txt` and `twine check`          |
+| Step                                              | Sub-action                                                                                          | What it runs                                                                                                             |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `Extract project/repository naming`               | [lfreleng-actions/build-metadata-action](https://github.com/lfreleng-actions/build-metadata-action) | `python3 -I -` to read `pyproject.toml` or `setup.py`, when `python3` is on `PATH`                                       |
+| `Verify distributions match the release`          | None                                                                                                | `python3 -I scripts/verify-distributions.py`, with no third-party packages, to read the selected distributions' metadata |
+| `Check distribution metadata`                     | None                                                                                                | `python3 -I -m venv`, then `pip install --require-hashes` of `scripts/twine-requirements.txt` and `twine check`          |
+| `Compare selection with the release on the index` | None                                                                                                | `python3 -I scripts/compare-release.py`, with no third-party packages, to read the release's files from the index        |
 
 <!-- markdownlint-enable MD013 -->
 
