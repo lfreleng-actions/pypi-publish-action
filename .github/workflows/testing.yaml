@@ -99,6 +99,14 @@ jobs:
         shell: bash
         run: bash tests/test-artefact-safety.sh
 
+      - name: 'Test distribution identity check'
+        shell: bash
+        run: bash tests/test-verify-distributions.sh
+
+      - name: 'Test Twine metadata check'
+        shell: bash
+        run: bash tests/test-check-metadata.sh
+
       - name: 'Create fixture project and distributions'
         shell: bash
         run: |
@@ -111,10 +119,11 @@ jobs:
           } > fixture/pyproject.toml
           echo '"""Fixture."""' > fixture/src/fixture/__init__.py
           echo 'unrelated' > fixture/notes.txt
-          # Placeholder distributions plus a file that must not upload
-          name='lfreleng_pypi_publish_action_fixture-0.0.1'
-          echo 'wheel' > "fixture-dists/$name-py3-none-any.whl"
-          echo 'sdist' > "fixture-dists/$name.tar.gz"
+          # Distributions for the release plus a file that must not upload
+          for kind in wheel sdist; do
+            python3 -I tests/make-distribution.py "$kind" fixture-dists \
+              lfreleng-pypi-publish-action-fixture 0.0.1
+          done
           echo 'not a distribution' > fixture-dists/README.txt
           find fixture -type f -print0 | sort -z | xargs -0 sha256sum \
             > "$RUNNER_TEMP/fixture-before.txt"
@@ -267,5 +276,150 @@ jobs:
           fi
           if [ "$status" -eq 0 ]; then
             echo "Empty project name rejected ✅"
+          fi
+          exit "$status"
+
+  ### Distributions must match the requested project and release ###
+  release-identity:
+    name: 'Test distribution identity check'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
+        with:
+          egress-policy: audit
+
+      - name: 'Checkout repository'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Create fixture project and distributions'
+        shell: bash
+        run: |
+          # Fixture project; its distributions are for another release
+          mkdir -p fixture mismatch release invalid
+          {
+            echo '[project]'
+            echo 'name = "lfreleng-pypi-publish-action-fixture"'
+            echo 'version = "0.0.2"'
+          } > fixture/pyproject.toml
+          name='lfreleng-pypi-publish-action-fixture'
+          for kind in wheel sdist; do
+            python3 -I tests/make-distribution.py "$kind" release \
+              "$name" 0.0.2
+          done
+          # One matching wheel mixed with an older release and a
+          # distribution of another project
+          cp release/*.whl mismatch/
+          python3 -I tests/make-distribution.py wheel mismatch "$name" 0.0.1
+          python3 -I tests/make-distribution.py sdist mismatch \
+            lfreleng-other-project 0.0.2
+          # The release, with a field Twine rejects in the wheel
+          cp release/*.tar.gz invalid/
+          python3 -I tests/make-distribution.py wheel invalid "$name" 0.0.2 \
+            --header='Unknown-Field: invalid'
+
+      - name: 'Upload mismatched distributions'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: 'identity-mismatch-${{ github.run_attempt }}'
+          path: 'mismatch/'
+          overwrite: true
+
+      - name: 'Upload matching distributions'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: 'identity-release-${{ github.run_attempt }}'
+          path: 'release/'
+          overwrite: true
+
+      - name: 'Upload distributions with invalid metadata'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: 'identity-invalid-${{ github.run_attempt }}'
+          path: 'invalid/'
+          overwrite: true
+
+      - name: 'Run action with a mismatched selection'
+        id: mismatch
+        continue-on-error: true
+        uses: $/
+        with:
+          path_prefix: 'fixture'
+          artefact_path: 'dist-mismatch'
+          artefact_pattern: 'identity-mismatch-${{ github.run_attempt }}'
+          environment: 'development'
+          tag: '0.0.2'
+          no_checkout: true
+          trusted_publishing: 'true'
+          publish_disable: true
+
+      - name: 'Run action with invalid metadata'
+        id: invalid
+        continue-on-error: true
+        uses: $/
+        with:
+          path_prefix: 'fixture'
+          artefact_path: 'dist-invalid'
+          artefact_pattern: 'identity-invalid-${{ github.run_attempt }}'
+          environment: 'development'
+          tag: '0.0.2'
+          no_checkout: true
+          trusted_publishing: 'true'
+          publish_disable: true
+
+      - name: 'Run action with a v-prefixed tag'
+        uses: $/
+        with:
+          path_prefix: 'fixture'
+          artefact_path: 'dist-release'
+          artefact_pattern: 'identity-release-${{ github.run_attempt }}'
+          environment: 'development'
+          tag: 'v0.0.2'
+          no_checkout: true
+          trusted_publishing: 'true'
+          publish_disable: true
+
+      - name: 'Verify rejected selections failed before any copy'
+        shell: bash
+        env:
+          MISMATCH_OUTCOME: "${{ steps.mismatch.outcome }}"
+          INVALID_OUTCOME: "${{ steps.invalid.outcome }}"
+        run: |
+          # The checks run before the copy, index query, credential
+          # selection and upload steps, so a rejected selection never
+          # reaches artefact_path
+          status=0
+          if [ "$MISMATCH_OUTCOME" != 'failure' ]; then
+            echo "Error: mismatched selection was not rejected ❌"
+            status=1
+          fi
+          if [ "$INVALID_OUTCOME" != 'failure' ]; then
+            echo "Error: invalid metadata was not rejected ❌"
+            status=1
+          fi
+          for dir in fixture/dist-mismatch fixture/dist-invalid; do
+            if [ -e "$dir" ]; then
+              echo "Error: rejected distributions reached $dir ❌"
+              status=1
+            fi
+          done
+          name='lfreleng_pypi_publish_action_fixture-0.0.2'
+          expected="$(printf '%s\n' "$name-py3-none-any.whl" "$name.tar.gz")"
+          actual="$(cd fixture/dist-release && LC_ALL=C ls -A)"
+          if [ "$actual" != "$expected" ]; then
+            echo "Error: unexpected artefact_path content: $actual ❌"
+            status=1
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo "Rejected selections stopped; release accepted ✅"
           fi
           exit "$status"
