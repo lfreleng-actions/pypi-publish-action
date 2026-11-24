@@ -107,6 +107,10 @@ jobs:
         shell: bash
         run: bash tests/test-check-metadata.sh
 
+      - name: 'Test per-file release comparison'
+        shell: bash
+        run: bash tests/test-compare-release.sh
+
       - name: 'Create fixture project and distributions'
         shell: bash
         run: |
@@ -189,6 +193,10 @@ jobs:
           fi
           if compgen -G '.pypi-publish-dist.*' > /dev/null; then
             echo "Error: selection directory was not removed ❌"
+            status=1
+          fi
+          if compgen -G '.pypi-publish-upload.*' > /dev/null; then
+            echo "Error: upload directory was not removed ❌"
             status=1
           fi
           if [ "$status" -eq 0 ]; then
