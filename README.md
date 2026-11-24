@@ -74,6 +74,46 @@ it, before downloading anything, when it resolves (following symlinks) to
 the workspace root, the project root (`path_prefix`), a parent of the
 project root, or a location outside the workspace.
 
+## Release Verification
+
+Before it copies anything to `artefact_path`, queries the package index,
+selects or retrieves a credential, or uploads, the action reads the core
+metadata (`METADATA` in a wheel, the top-level `PKG-INFO` in an sdist) of
+every selected distribution, without extracting it. The run fails, naming
+the expected and actual project and version, when the selection:
+
+- holds no wheel or sdist, or holds any other entry;
+- holds a distribution with a missing or repeated `Metadata-Version`,
+  `Name` or `Version` field, or with an invalid name or version;
+- holds a distribution whose checked metadata is not the file the
+  uploader, Twine 7.0.0, would read: a wheel with another `METADATA`
+  member Twine reads first, or an sdist with a repeated `PKG-INFO` or
+  more than one top-level directory;
+- holds a distribution of another project, compared after
+  [PEP 503](https://peps.python.org/pep-0503/) normalisation, so
+  `my_project`, `My.Project` and `my-project` match;
+- holds a distribution of any version other than `tag`, compared as
+  normalised [PEP 440](https://peps.python.org/pep-0440/) versions.
+
+`tag` must be a valid PEP 440 version. The action accepts a leading `v`
+or `V`: `v2.0.0` and `2.0.0` both request release `2.0.0`. Spellings that
+normalise to the same version, such as `2.0.0-RC1` and `2.0.0rc1`, match.
+Normalisation keeps trailing zeros: `2.0` does not match a `2.0.0`
+distribution.
+
+Next, still before any of those steps, the action validates the complete
+metadata of every selected distribution with `twine check`. It installs
+Twine 7.0.0, the version the uploader runs, into a temporary virtual
+environment from the hash-locked
+[`scripts/twine-requirements.txt`](scripts/twine-requirements.txt), so
+metadata Twine would reject at upload, such as an unrecognised field or
+an invalid `Requires-Python`, fails the run before the action chooses
+or retrieves any credential.
+
+The package index check and the summary link use the verified project
+name and version. Every upload step also runs `twine check` on the
+selection before uploading (`verify-metadata: true`).
+
 ## Inputs
 
 <!-- markdownlint-disable MD013 -->
@@ -113,16 +153,24 @@ The second action above is a modified/forked version of another action:
 ## Python on the Runner
 
 The action needs `python3` on the job's `PATH`; GitHub-hosted runners
-provide one. One step uses that interpreter, with the repository you
+provide one. Three steps use that interpreter, with the repository you
 publish checked out as the working directory:
 
 <!-- markdownlint-disable MD013 -->
 
-| Step                                | Sub-action                                                                                          | What it runs                                                                       |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `Extract project/repository naming` | [lfreleng-actions/build-metadata-action](https://github.com/lfreleng-actions/build-metadata-action) | `python3 -I -` to read `pyproject.toml` or `setup.py`, when `python3` is on `PATH` |
+| Step                                     | Sub-action                                                                                          | What it runs                                                                                                             |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `Extract project/repository naming`      | [lfreleng-actions/build-metadata-action](https://github.com/lfreleng-actions/build-metadata-action) | `python3 -I -` to read `pyproject.toml` or `setup.py`, when `python3` is on `PATH`                                       |
+| `Verify distributions match the release` | None                                                                                                | `python3 -I scripts/verify-distributions.py`, with no third-party packages, to read the selected distributions' metadata |
+| `Check distribution metadata`            | None                                                                                                | `python3 -I -m venv`, then `pip install --require-hashes` of `scripts/twine-requirements.txt` and `twine check`          |
 
 <!-- markdownlint-enable MD013 -->
+
+The `Check distribution metadata` step needs Python 3.10 or later
+with the `venv` module and its bundled `pip`, and downloads the pinned
+wheels from the package index `pip` uses, `pypi.org` and
+`files.pythonhosted.org` by default; a job behind an egress allow-list
+must permit those hosts.
 
 The `Checking package index for build/release` step, which runs
 [lfreleng-actions/pypi-version-check-action](https://github.com/lfreleng-actions/pypi-version-check-action),

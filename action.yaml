@@ -203,6 +203,29 @@ runs:
         bash "$GITHUB_ACTION_PATH/scripts/select-distributions.sh" \
           "$DOWNLOAD_DIR" "$SELECTION_DIR"
 
+    - name: 'Verify distributions match the release'
+      id: release
+      shell: bash
+      env:
+        SELECTION_DIR: "${{ steps.staging.outputs.selection_dir }}"
+        PROJECT_NAME: "${{ steps.naming.outputs.project_name }}"
+        TAG: "${{ inputs.tag }}"
+      run: |
+        # Read each distribution's metadata and refuse any selection that
+        # is not exactly the requested project and release, before
+        # anything is copied, a credential is chosen or an upload starts
+        python3 -I "$GITHUB_ACTION_PATH/scripts/verify-distributions.py" \
+          "$SELECTION_DIR" "$PROJECT_NAME" "$TAG"
+
+    - name: 'Check distribution metadata'
+      shell: bash
+      env:
+        SELECTION_DIR: "${{ steps.staging.outputs.selection_dir }}"
+      run: |
+        # Run the uploader's Twine version, hash-pinned, over the complete
+        # metadata, so invalid metadata fails before a credential is used
+        bash "$GITHUB_ACTION_PATH/scripts/check-metadata.sh" "$SELECTION_DIR"
+
     - name: 'Copy distributions to artefact path'
       shell: bash
       env:
@@ -221,8 +244,8 @@ runs:
       uses: lfreleng-actions/pypi-version-check-action@81a9b76c7e6c2a1e1f32a31dd0f1a6a952ded827 # v0.2.4
       with:
         index_url: "${{ env.base_url }}/simple"
-        package_name: "${{ steps.naming.outputs.project_name }}"
-        package_version: "${{ inputs.tag }}"
+        package_name: "${{ steps.release.outputs.name }}"
+        package_version: "${{ steps.release.outputs.version }}"
 
     - name: 'Determine publishing method'
       id: conditions
@@ -333,8 +356,8 @@ runs:
       with:
         repository-url: "${{ env.publish_url }}"
         packages-dir: "${{ steps.staging.outputs.packages_dir }}"
-        # We already validated earlier in the pipeline (twine)
-        verify-metadata: false
+        # Runs 'twine check' on the selection before uploading
+        verify-metadata: true
         attestations: "${{ inputs.attestations }}"
         # Show checksum values
         print-hash: true
@@ -402,7 +425,7 @@ runs:
       with:
         repository-url: "${{ env.publish_url }}"
         packages-dir: "${{ steps.staging.outputs.packages_dir }}"
-        verify-metadata: false
+        verify-metadata: true
         # Credential resolved from 1Password and exported by the previous
         # step (load-secrets-action with export-env: true)
         password: ${{ env.pypi_credential }}
@@ -424,7 +447,7 @@ runs:
       with:
         repository-url: "${{ env.publish_url }}"
         packages-dir: "${{ steps.staging.outputs.packages_dir }}"
-        verify-metadata: false
+        verify-metadata: true
         # Publishing API key stored as secret/variable in GitHub
         password: ${{ inputs.pypi_credential }}
         attestations: "${{ inputs.attestations }}"
@@ -437,8 +460,8 @@ runs:
         PUBLISH_DISABLE: "${{ inputs.publish_disable }}"
         PUBLISH_METHOD: "${{ steps.conditions.outputs.publish_method }}"
         BASE_URL: "${{ env.base_url }}"
-        PROJECT_NAME: "${{ steps.naming.outputs.project_name }}"
-        TAG: "${{ inputs.tag }}"
+        PROJECT_NAME: "${{ steps.release.outputs.name }}"
+        VERSION: "${{ steps.release.outputs.version }}"
       # yamllint disable rule:line-length
       run: |
         # Print summary/job output
@@ -453,7 +476,7 @@ runs:
         fi
         echo "Authenticated using: $PUBLISH_METHOD" >> "$GITHUB_STEP_SUMMARY"
         if [ "$PUBLISH_DISABLE" != "true" ]; then
-          echo "🔗 $BASE_URL/project/$PROJECT_NAME/$TAG/" >> "$GITHUB_STEP_SUMMARY"
+          echo "🔗 $BASE_URL/project/$PROJECT_NAME/$VERSION/" >> "$GITHUB_STEP_SUMMARY"
         fi
 
     - name: 'Remove selection directory'
