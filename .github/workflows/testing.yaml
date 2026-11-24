@@ -224,6 +224,10 @@ jobs:
         shell: bash
         run: bash tests/test-compare-release.sh
 
+      - name: 'Test retry of the download by name'
+        shell: bash
+        run: bash tests/test-retry-download.sh
+
       - name: 'Create fixture project and distributions'
         shell: bash
         run: |

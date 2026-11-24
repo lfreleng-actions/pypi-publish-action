@@ -47,6 +47,24 @@ steps:
 This downloads all artefacts matching the pattern and merges them into one
 download directory for publishing.
 
+### Download Retries
+
+Without `artefact_pattern`, the action downloads the artefact named after
+the project. GitHub's artefact service can briefly fail to find an
+artefact that the same job uploaded moments before, reporting
+`Artifact not found for name` or `No artifacts found for ID`. The action
+makes up to five attempts at a download by name, waiting 2, 4, 8 and 16
+seconds between them, about 30 seconds in all. The download step cannot
+pass its error message on, so the action treats a failed attempt that
+left the download directory empty as a miss. Each failed attempt logs
+the download error. After the fifth miss the run fails with
+`Artefact '<name>' not found after 5 attempts`.
+
+The action does not retry a failed attempt that left files in the
+download directory, such as a digest mismatch found after extraction; the
+run fails at once. A download by pattern makes a single attempt; the
+lookup it relies on can miss in the same way.
+
 ## Distribution Selection
 
 The action never deletes files from your repository or project:

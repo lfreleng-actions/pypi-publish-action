@@ -166,13 +166,120 @@ runs:
           exit 1
         fi
 
-    - name: '⬇ Download build artefacts (single)'
+    # GitHub's artefact service can briefly fail to find an artefact
+    # the same job has just uploaded. Try the download by name up to
+    # five times; after each failure, scripts/retry-download.sh waits
+    # and asks for another attempt while the download directory is
+    # still empty, and fails at once when the attempt left files there.
+    - name: '⬇ Download build artefacts (single, attempt 1)'
+      id: download-1
       # yamllint disable-line rule:line-length
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       if: inputs.artefact_pattern == ''
+      continue-on-error: true
       with:
         name: "${{ steps.naming.outputs.project_name }}"
         path: "${{ steps.staging.outputs.download_dir }}"
+
+    - name: 'Check download attempt 1'
+      id: retry-1
+      if: steps.download-1.outcome == 'failure'
+      shell: bash
+      env:
+        DOWNLOAD_DIR: "${{ steps.staging.outputs.download_dir }}"
+        PROJECT_NAME: "${{ steps.naming.outputs.project_name }}"
+      run: |
+        # Retry only a miss, which leaves the download directory empty
+        bash "$GITHUB_ACTION_PATH/scripts/retry-download.sh" \
+          1 "$DOWNLOAD_DIR" "$PROJECT_NAME"
+
+    - name: '⬇ Download build artefacts (single, attempt 2)'
+      id: download-2
+      # yamllint disable-line rule:line-length
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: steps.retry-1.outputs.retry == 'true'
+      continue-on-error: true
+      with:
+        name: "${{ steps.naming.outputs.project_name }}"
+        path: "${{ steps.staging.outputs.download_dir }}"
+
+    - name: 'Check download attempt 2'
+      id: retry-2
+      if: steps.download-2.outcome == 'failure'
+      shell: bash
+      env:
+        DOWNLOAD_DIR: "${{ steps.staging.outputs.download_dir }}"
+        PROJECT_NAME: "${{ steps.naming.outputs.project_name }}"
+      run: |
+        # Retry only a miss, which leaves the download directory empty
+        bash "$GITHUB_ACTION_PATH/scripts/retry-download.sh" \
+          2 "$DOWNLOAD_DIR" "$PROJECT_NAME"
+
+    - name: '⬇ Download build artefacts (single, attempt 3)'
+      id: download-3
+      # yamllint disable-line rule:line-length
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: steps.retry-2.outputs.retry == 'true'
+      continue-on-error: true
+      with:
+        name: "${{ steps.naming.outputs.project_name }}"
+        path: "${{ steps.staging.outputs.download_dir }}"
+
+    - name: 'Check download attempt 3'
+      id: retry-3
+      if: steps.download-3.outcome == 'failure'
+      shell: bash
+      env:
+        DOWNLOAD_DIR: "${{ steps.staging.outputs.download_dir }}"
+        PROJECT_NAME: "${{ steps.naming.outputs.project_name }}"
+      run: |
+        # Retry only a miss, which leaves the download directory empty
+        bash "$GITHUB_ACTION_PATH/scripts/retry-download.sh" \
+          3 "$DOWNLOAD_DIR" "$PROJECT_NAME"
+
+    - name: '⬇ Download build artefacts (single, attempt 4)'
+      id: download-4
+      # yamllint disable-line rule:line-length
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: steps.retry-3.outputs.retry == 'true'
+      continue-on-error: true
+      with:
+        name: "${{ steps.naming.outputs.project_name }}"
+        path: "${{ steps.staging.outputs.download_dir }}"
+
+    - name: 'Check download attempt 4'
+      id: retry-4
+      if: steps.download-4.outcome == 'failure'
+      shell: bash
+      env:
+        DOWNLOAD_DIR: "${{ steps.staging.outputs.download_dir }}"
+        PROJECT_NAME: "${{ steps.naming.outputs.project_name }}"
+      run: |
+        # Retry only a miss, which leaves the download directory empty
+        bash "$GITHUB_ACTION_PATH/scripts/retry-download.sh" \
+          4 "$DOWNLOAD_DIR" "$PROJECT_NAME"
+
+    - name: '⬇ Download build artefacts (single, attempt 5)'
+      id: download-5
+      # yamllint disable-line rule:line-length
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: steps.retry-4.outputs.retry == 'true'
+      continue-on-error: true
+      with:
+        name: "${{ steps.naming.outputs.project_name }}"
+        path: "${{ steps.staging.outputs.download_dir }}"
+
+    - name: 'Check download attempt 5'
+      id: retry-5
+      if: steps.download-5.outcome == 'failure'
+      shell: bash
+      env:
+        DOWNLOAD_DIR: "${{ steps.staging.outputs.download_dir }}"
+        PROJECT_NAME: "${{ steps.naming.outputs.project_name }}"
+      run: |
+        # Retry only a miss, which leaves the download directory empty
+        bash "$GITHUB_ACTION_PATH/scripts/retry-download.sh" \
+          5 "$DOWNLOAD_DIR" "$PROJECT_NAME"
 
     - name: '⬇ Download build artefacts (pattern)'
       # yamllint disable-line rule:line-length
