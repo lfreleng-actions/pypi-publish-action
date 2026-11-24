@@ -21,9 +21,6 @@ concurrency:
 
 permissions: {}
 
-env:
-  tag: '0.0.1-dev0'
-
 jobs:
   ### Test the GitHub Action in this Repository ###
   tests:
@@ -62,18 +59,134 @@ jobs:
         # yamllint disable-line rule:line-length
         uses: lfreleng-actions/python-build-action@cb2041b440894cd2af2b3e90c2f14ff75f0fccbe # v2.1.3
         with:
-          tag: "${{ env.tag }}"
           path_prefix: 'test-python-project'
+
+      # The project takes its version from git, so pass the action the
+      # version the build produced rather than a fixed tag
+      - name: 'Read built version'
+        id: built
+        shell: bash
+        run: |
+          # Read Version from the metadata of the built wheel
+          shopt -s nullglob
+          wheels=(test-python-project/dist/*.whl)
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "Error: expected one wheel, found ${#wheels[@]} ❌"
+            exit 1
+          fi
+          version="$(python3 -I -c '
+          import sys, zipfile
+          from email.parser import BytesParser
+          with zipfile.ZipFile(sys.argv[1]) as wheel:
+              names = [n for n in wheel.namelist()
+                       if n.endswith(".dist-info/METADATA")
+                       and n.count("/") == 1]
+              if len(names) != 1:
+                  sys.exit("Error: wheel metadata not found ❌")
+              metadata = BytesParser().parsebytes(
+                  wheel.read(names[0]), headersonly=True)
+          print(metadata.get("Version", ""))
+          ' "${wheels[0]}")"
+          if [ -z "$version" ]; then
+            echo 'Error: wheel metadata carries no Version ❌'
+            exit 1
+          fi
+          echo "Built version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: "Running local action: ${{ github.repository }}"
         uses: $/
         with:
           path_prefix: 'test-python-project'
-          tag: "${{ env.tag }}"
+          tag: "${{ steps.built.outputs.version }}"
           no_checkout: true
           op_service_account_token: "${{ secrets.op_service_account_token }}"
           one_password_item: "${{ vars.one_password_item }}"
           pypi_credential: "${{ secrets.pypi_credential }}"
+          publish_disable: true
+
+  ### Run the action on a real build where `tests` cannot run ###
+  built-project:
+    name: 'Test local GitHub Action on a built project'
+    # `tests` uploads an artefact named after the project; limiting this
+    # job to pull requests keeps the two apart
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
+        with:
+          egress-policy: audit
+
+      - name: 'Checkout repository'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Perform setup prior to running test(s)
+      - name: 'Checkout sample project repository'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: "lfreleng-actions/test-python-project"
+          path: 'test-python-project'
+          persist-credentials: false
+
+      # Name the artefact per run attempt and fetch it by pattern, as the
+      # other pull request jobs do: a download by the project name
+      # found no artefact on the pull request run
+      - name: 'Build Python project'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/python-build-action@cb2041b440894cd2af2b3e90c2f14ff75f0fccbe # v2.1.3
+        with:
+          path_prefix: 'test-python-project'
+          artefact_name: 'built-project-${{ github.run_attempt }}'
+
+      # The project takes its version from git, so pass the action the
+      # version the build produced rather than a fixed tag
+      - name: 'Read built version'
+        id: built
+        shell: bash
+        run: |
+          # Read Version from the metadata of the built wheel
+          shopt -s nullglob
+          wheels=(test-python-project/dist/*.whl)
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "Error: expected one wheel, found ${#wheels[@]} ❌"
+            exit 1
+          fi
+          version="$(python3 -I -c '
+          import sys, zipfile
+          from email.parser import BytesParser
+          with zipfile.ZipFile(sys.argv[1]) as wheel:
+              names = [n for n in wheel.namelist()
+                       if n.endswith(".dist-info/METADATA")
+                       and n.count("/") == 1]
+              if len(names) != 1:
+                  sys.exit("Error: wheel metadata not found ❌")
+              metadata = BytesParser().parsebytes(
+                  wheel.read(names[0]), headersonly=True)
+          print(metadata.get("Version", ""))
+          ' "${wheels[0]}")"
+          if [ -z "$version" ]; then
+            echo 'Error: wheel metadata carries no Version ❌'
+            exit 1
+          fi
+          echo "Built version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: "Running local action: ${{ github.repository }}"
+        uses: $/
+        with:
+          path_prefix: 'test-python-project'
+          artefact_pattern: 'built-project-${{ github.run_attempt }}'
+          environment: 'development'
+          tag: "${{ steps.built.outputs.version }}"
+          no_checkout: true
+          trusted_publishing: 'true'
           publish_disable: true
 
   ### Artefact cleanup/selection must never touch project files ###
