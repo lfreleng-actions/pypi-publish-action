@@ -544,3 +544,78 @@ jobs:
             echo "Rejected selections stopped; release accepted ✅"
           fi
           exit "$status"
+
+  ### Other project marker files must not rename a Python project ###
+  project-type:
+    name: 'Test Python project beside another marker file'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
+        with:
+          egress-policy: audit
+
+      - name: 'Checkout repository'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Create fixture project and distributions'
+        shell: bash
+        run: |
+          # Python project carrying a package.json that names another
+          # project, which outranks pyproject.toml unless the type is set
+          mkdir -p fixture typed
+          name='lfreleng-pypi-publish-action-typed'
+          {
+            echo '[project]'
+            echo "name = \"$name\""
+            echo 'version = "0.0.3"'
+          } > fixture/pyproject.toml
+          {
+            echo '{'
+            echo '  "name": "lfreleng-pypi-publish-action-node-side",'
+            echo '  "devDependencies": {"prettier": "3.0.0"}'
+            echo '}'
+          } > fixture/package.json
+          for kind in wheel sdist; do
+            python3 -I tests/make-distribution.py "$kind" typed "$name" 0.0.3
+          done
+
+      # Named after the Python project, so the action downloads it only
+      # when it resolves that name
+      - name: 'Upload distributions'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: 'lfreleng-pypi-publish-action-typed'
+          path: 'typed/'
+          overwrite: true
+
+      - name: 'Run action without an artefact pattern'
+        uses: $/
+        with:
+          path_prefix: 'fixture'
+          artefact_path: 'dist'
+          environment: 'development'
+          tag: '0.0.3'
+          no_checkout: true
+          trusted_publishing: 'true'
+          publish_disable: true
+
+      - name: 'Verify the distributions reached artefact_path'
+        shell: bash
+        run: |
+          # Verify the distributions reached artefact_path
+          name='lfreleng_pypi_publish_action_typed-0.0.3'
+          expected="$(printf '%s\n' "$name-py3-none-any.whl" "$name.tar.gz")"
+          actual="$(cd fixture/dist && LC_ALL=C ls -A)"
+          if [ "$actual" != "$expected" ]; then
+            echo "Error: unexpected artefact_path content: $actual ❌"
+            exit 1
+          fi
+          echo "Python project named despite package.json ✅"
